@@ -113,8 +113,35 @@ class SC3MLTestCase(unittest.TestCase):
         """
         data_file = os.path.join(self.data_dir, "sc3ml_010.xml")
         inv = read_inventory(data_file)
-        for stage in inv[0][0][0].response.response_stages:
-          print(stage)
+        stages = inv[0][0][0].response.response_stages
+
+        # Instrument PAZ
+        self.assertEqual(stages[0].stage_gain, -120.948)
+        self.assertEqual(stages[0].normalization_factor, 1.37972)
+
+        # Analogue chain
+        self.assertEqual(stages[1].stage_gain, 1.0)
+        self.assertEqual(stages[1].normalization_factor, 1)
+
+        # Analogue chain
+        self.assertEqual(stages[2].stage_gain, 0.99917)
+        self.assertEqual(stages[2].normalization_factor, 1.04963e+14)
+
+        # Datalogger element
+        self.assertEqual(stages[3].stage_gain, 1000000)
+        self.assertEqual(stages[3].cf_transfer_function_type, "DIGITAL")
+
+        # FIR 
+        self.assertEqual(stages[4].stage_gain, 1000000)
+        self.assertEqual(stages[4].decimation_delay, 90.0)
+        self.assertEqual(stages[4].decimation_correction, 90.0)
+
+        # PAZ with decimation attributes
+        self.assertEqual(stages[5].stage_gain, 1.0)
+        self.assertEqual(stages[5].decimation_factor, 1.0)
+        self.assertEqual(stages[5].pz_transfer_function_type, "DIGITAL (Z-TRANSFORM)")
+
+        # XXX TODO: test IIR stages 6
 
     def test_compare_response(self):
         """

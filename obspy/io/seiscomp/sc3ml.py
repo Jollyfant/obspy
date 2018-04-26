@@ -647,6 +647,7 @@ def _read_response(root, sen_element, resp_element, cha_element,
         if fir_response is not None:
             response.response_stages.append(fir_response)
             stage += 1
+
     return response
 
 
@@ -710,7 +711,6 @@ def _read_response_stage(stage, _ns, rate, stage_sequence_number, input_units,
     # Decimation delay/correction need to be normalized
     if rate != 0.0:
       if decimation["delay"] is not None:
-        decimation["delay"] /= rate
         decimation["delay"] = _read_float_var(decimation["delay"] / rate, FloatWithUncertaintiesAndUnit, unit=True)
       if decimation["correction"] is not None:
         decimation["correction"] = _read_float_var(decimation["correction"] / rate, FloatWithUncertaintiesAndUnit, unit=True)
@@ -811,7 +811,6 @@ def _read_response_stage(stage, _ns, rate, stage_sequence_number, input_units,
     # Datalogger element: V => Counts
     # Set empty coefficients and hard code as digital
     elif(elem_type == "datalogger"):
-        cf_transfer_function_type = "DIGITAL"
         return CoefficientsTypeResponseStage(
             cf_transfer_function_type="DIGITAL",
             numerator=[], denominator=[], **kwargs)
