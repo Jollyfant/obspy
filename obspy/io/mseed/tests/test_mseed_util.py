@@ -201,6 +201,36 @@ class MSEEDUtilTestCase(unittest.TestCase):
         self.assertEqual(info['number_of_records'], 2)
         self.assertEqual(info['excess_bytes'], 0)
 
+    def test_issue2069(self):
+        """
+        Tests the util._get_ms_file_info method with sample rate of 0.
+        Reads a datafile and sets sr factor and multipier to 0 and and mseed
+        ASCII LOG file with a sample rate of 0.
+        """
+
+        # Test with a file by setting sr = 0
+        filename = os.path.join(self.path, 'data',
+                                'BW.BGLD.__.EHE.D.2008.001.first_10_records')
+        fmt = '>HHBBBxHHhhBBBxlxxH'
+        with open(filename, "rb") as fh:
+            with io.BytesIO(fh.read()) as buf:
+                buf.seek(20, 0)
+                data = buf.read(28)
+                values = list(unpack(fmt, data))
+                values[7] = 0
+                values[8] = 0
+                data = pack(fmt, *values)
+                buf.seek(20, 0)
+                buf.write(data)
+                buf.seek(0, 0)
+                info = util.get_record_information(buf)
+                self.assertEqual(info['samp_rate'], 0)
+
+        # Test with an actual sr = 0 file
+        filename = os.path.join(self.path, 'data', 'rt130_sr0_cropped.mseed')
+        info = util.get_record_information(filename)
+        self.assertEqual(info['samp_rate'], 0)
+
     def test_get_data_quality(self):
         """
         This test reads a self-made Mini-SEED file with set Data Quality Bits.
@@ -1232,6 +1262,38 @@ class MSEEDUtilTestCase(unittest.TestCase):
 
         # Move the file_bfr to where it was before
         file_bfr.seek(prev_pos, os.SEEK_SET)
+
+    def test_get_record_information_with_invalid_word_order(self):
+        filename = os.path.join(self.path, "data",
+                                "record_with_invalid_word_order.mseed")
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            info = util.get_record_information(filename)
+
+        self.assertEqual(len(w), 1)
+        self.assertEqual(
+            w[0].message.args[0],
+            'Invalid word order "95" in blockette 1000 for record with '
+            'ID IU.COR..LHZ at offset 0.')
+        self.assertEqual(info, {
+            'filesize': 4096,
+            'station': 'COR',
+            'location': '',
+            'channel': 'LHZ',
+            'network': 'IU',
+            'npts': 1267,
+            'activity_flags': 64,
+            'io_and_clock_flags': 32,
+            'data_quality_flags': 0,
+            'time_correction': 0,
+            'encoding': 11,
+            'record_length': 4096,
+            'samp_rate': 1.0,
+            'starttime': UTCDateTime(1995, 6, 24, 0, 0, 0, 265000),
+            'endtime': UTCDateTime(1995, 6, 24, 0, 21, 6, 265000),
+            'byteorder': '>',
+            'number_of_records': 1,
+            'excess_bytes': 0})
 
 
 def suite():

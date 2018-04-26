@@ -12,7 +12,7 @@ import unittest
 from os.path import abspath, dirname, join, pardir
 import warnings
 
-from obspy import read
+from obspy import read, UTCDateTime
 from obspy.core.util.base import NamedTemporaryFile
 from obspy.core.util.misc import TemporaryWorkingDirectory, CatchOutput
 from obspy.core.util.testing import ImageComparison
@@ -108,19 +108,26 @@ class ScanTestCase(unittest.TestCase):
             for filename in self.all_files:
                 shutil.copy(filename, os.curdir)
 
+            # save via command line
             obspy_scan([os.curdir, '--write', 'scan.npz'])
+
+            # save via Python
             scanner.parse(os.curdir)
             scanner.save_npz('scanner.npz')
             scanner = Scanner()
+
             # version string of '0.0.0+archive' raises UserWarning - ignore
             with warnings.catch_warnings(record=True):
                 warnings.simplefilter('ignore', UserWarning)
-                scanner.load_npz('scanner.npz')
 
-            with ImageComparison(self.path, 'scan.png') as ic:
-                obspy_scan(['--load', 'scan.npz', '--output', ic.name])
-        with ImageComparison(self.path, 'scan.png') as ic:
-            scanner.plot(ic.name)
+                # load via Python
+                scanner.load_npz('scanner.npz')
+                with ImageComparison(self.path, 'scan.png') as ic:
+                    scanner.plot(ic.name)
+
+                # load via command line
+                with ImageComparison(self.path, 'scan.png') as ic:
+                    obspy_scan(['--load', 'scan.npz', '--output', ic.name])
 
     def test_scan_times(self):
         """
@@ -150,13 +157,13 @@ class ScanTestCase(unittest.TestCase):
             "TIMESERIES XX_TEST__BHZ_R, 200 samples, 200 sps, "
             "2008-01-15T00:00:02.000000, SLIST, INTEGER, Counts",
         ]
-
         files = []
-        expected_stdout_lines = [
+        expected = [
             "XX.TEST..BHZ 2008-01-15T00:00:01.000000Z "
             "2008-01-15T00:00:00.899995Z -0.100",
             "XX.TEST..BHZ 2008-01-15T00:00:01.899999Z "
-            "2008-01-15T00:00:02.000000Z 0.100"]
+            "2008-01-15T00:00:02.000000Z 0.100"
+        ]
         with NamedTemporaryFile() as f1, NamedTemporaryFile() as f2, \
                 NamedTemporaryFile() as f3:
             for i, fp in enumerate([f1, f2, f3]):
@@ -165,12 +172,35 @@ class ScanTestCase(unittest.TestCase):
                 fp.flush()
                 fp.seek(0)
                 files.append(fp.name)
-            with ImageComparison(self.path, 'scan_mult_sampl.png')\
-                    as ic:
+
+            # make image comparison instance and set manual rms (see #2089)
+            image_comp = ImageComparison(self.path, 'scan_mult_sampl.png')
+            image_comp.tol = 40
+
+            with image_comp as ic:
+
+                obspy_scan(files + ['--output', ic.name, '--print-gaps'])
+
                 with CatchOutput() as out:
                     obspy_scan(files + ['--output', ic.name, '--print-gaps'])
-                self.assertEqual(
-                    expected_stdout_lines, out.stdout.decode().splitlines())
+
+                # read output and compare with expected
+                # only check if datetime objects are close, not exact
+                output = out.stdout.splitlines()
+                for ex_line, out_line in zip(expected, output):
+                    ex_split = ex_line.split(' ')
+                    out_split = out_line.split(' ')
+                    for ex_str, out_str in zip(ex_split, out_split):
+                        try:
+                            utc1 = UTCDateTime(ex_str)
+                            utc2 = UTCDateTime(out_str)
+                        except (ValueError, TypeError):
+                            # if str is not a datetime it should be equal
+                            self.assertEqual(ex_str, out_str)
+                        else:
+                            # datetimes just need to be close
+                            t1, t2 = utc1.timestamp, utc2.timestamp
+                            self.assertTrue(abs(t1 - t2) < .001)
 
 
 def suite():

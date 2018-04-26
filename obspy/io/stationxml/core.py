@@ -235,7 +235,22 @@ def _read_station(sta_element, _ns):
         station.external_references.append(_read_external_reference(ref, _ns))
     channels = []
     for channel in sta_element.findall(_ns("Channel")):
-        channels.append(_read_channel(channel, _ns))
+        # Skip empty channels.
+        if not channel.items() and not channel.attrib:
+            continue
+        cha = _read_channel(channel, _ns)
+        # Might be None in case the channel could not be parsed.
+        if cha is None:
+            # This is None if, and only if, one of the coordinates could not
+            # be set.
+            msg = ("Channel %s.%s of station %s does not have a complete set "
+                   "of coordinates and thus it cannot be read. It will not be "
+                   "part of the final inventory object." % (
+                    channel.get("locationCode"), channel.get("code"),
+                    sta_element.get("code")))
+            warnings.warn(msg, UserWarning)
+        else:
+            channels.append(cha)
     station.channels = channels
     return station
 
@@ -293,6 +308,20 @@ def _read_floattype_list(parent, tag, cls, unit=False, datum=False,
 
 
 def _read_channel(cha_element, _ns):
+    """
+    Returns either a :class:`~obspy.core.inventory.channel.Channel` object or
+    ``None``.
+
+    It should return ``None`` if and only if it did not manage to
+    successfully create a :class:`~obspy.core.inventory.channel.Channel`
+    object which can only happen if one of the coordinates is not set. All the
+    others are optional. If either the location or channel code is not set it
+    raises but that is fine as that would deviate too much from the StationXML
+    standard to be worthwhile to recover from.
+    """
+    code = cha_element.get("code")
+    location_code = cha_element.get("locationCode")
+
     longitude = _read_floattype(cha_element, _ns("Longitude"), Longitude,
                                 datum=True)
     latitude = _read_floattype(cha_element, _ns("Latitude"), Latitude,
@@ -300,8 +329,11 @@ def _read_channel(cha_element, _ns):
     elevation = _read_floattype(cha_element, _ns("Elevation"), Distance,
                                 unit=True)
     depth = _read_floattype(cha_element, _ns("Depth"), Distance, unit=True)
-    code = cha_element.get("code")
-    location_code = cha_element.get("locationCode")
+
+    # All of these must be given, otherwise it is an invalid station.
+    if None in [longitude, latitude, elevation, depth]:
+        return None
+
     channel = obspy.core.inventory.Channel(
         code=code, location_code=location_code, latitude=latitude,
         longitude=longitude, elevation=elevation, depth=depth)
@@ -823,7 +855,10 @@ def _write_stationxml(inventory, file_or_file_object, validate=False,
         etree.SubElement(root, "Module").text = inventory.module
         etree.SubElement(root, "ModuleURI").text = inventory.module_uri
 
-    etree.SubElement(root, "Created").text = _format_time(inventory.created)
+    etree.SubElement(root, "Created").text = str(inventory.created)
+
+    if level not in ["network", "station", "channel", "response"]:
+        raise ValueError("Requested stationXML write level is unsupported.")
 
     if level not in ["network", "station", "channel", "response"]:
         raise ValueError("Requested stationXML write level is unsupported.")
@@ -864,9 +899,9 @@ def _write_stationxml(inventory, file_or_file_object, validate=False,
 def _get_base_node_attributes(element):
     attributes = {"code": element.code}
     if element.start_date:
-        attributes["startDate"] = _format_time(element.start_date)
+        attributes["startDate"] = str(element.start_date)
     if element.end_date:
-        attributes["endDate"] = _format_time(element.end_date)
+        attributes["endDate"] = str(element.end_date)
     if element.restricted_status:
         attributes["restrictedStatus"] = element.restricted_status
     if element.alternate_code:
@@ -908,11 +943,14 @@ def _write_network(parent, network, level):
         _write_station(network_elem, station, level)
 
 
-def _write_floattype(parent, obj, attr_name, tag, additional_mapping={}):
+def _write_floattype(parent, obj, attr_name, tag, additional_mapping={},
+                     cls=None):
     attribs = {}
     obj_ = getattr(obj, attr_name)
     if obj_ is None:
         return
+    if cls and not isinstance(obj_, cls):
+        obj_ = cls(obj_)
     attribs["datum"] = obj_.__dict__.get("datum")
     if hasattr(obj_, "unit"):
         attribs["unit"] = obj_.unit
@@ -1027,10 +1065,10 @@ def _write_station(parent, station, level):
         _write_extra(operator_elem, operator)
 
     etree.SubElement(station_elem, "CreationDate").text = \
-        _format_time(station.creation_date)
+        str(station.creation_date)
     if station.termination_date:
         etree.SubElement(station_elem, "TerminationDate").text = \
-            _format_time(station.termination_date)
+            str(station.termination_date)
     # The next two tags are optional.
     _obj2tag(station_elem, "TotalNumberChannels",
              station.total_number_of_channels)
@@ -1057,8 +1095,8 @@ def _write_channel(parent, channel, level):
     if channel.data_availability is not None:
         da = etree.SubElement(channel_elem, "DataAvailability")
         etree.SubElement(da, "Extent", {
-            "start": _format_time(channel.data_availability.start),
-            "end": _format_time(channel.data_availability.end)
+            "start": str(channel.data_availability.start),
+            "end": str(channel.data_availability.end)
         })
         _write_extra(da, channel.data_availability)
 
@@ -1127,16 +1165,30 @@ def _write_polynomial_common_fields(element, polynomial):
     etree.SubElement(element, "ApproximationType").text = \
         str(polynomial.approximation_type)
     _write_floattype(element, polynomial,
-                     "frequency_lower_bound", "FrequencyLowerBound")
+                     "frequency_lower_bound", "FrequencyLowerBound",
+                     cls=Frequency)
     _write_floattype(element, polynomial,
-                     "frequency_upper_bound", "FrequencyUpperBound")
+                     "frequency_upper_bound", "FrequencyUpperBound",
+                     cls=Frequency)
     etree.SubElement(element, "ApproximationLowerBound").text = \
         _float_to_str(polynomial.approximation_lower_bound)
     etree.SubElement(element, "ApproximationUpperBound").text = \
         _float_to_str(polynomial.approximation_upper_bound)
     etree.SubElement(element, "MaximumError").text = \
         _float_to_str(polynomial.maximum_error)
-    _write_floattype_list(element, polynomial,
+
+    # Patch the polynomial to make sure the coefficients have the correct type.
+    p = copy.deepcopy(polynomial)
+    coeffs = []
+    for _i, c in enumerate(polynomial.coefficients):
+        if not isinstance(c, CoefficientWithUncertainties):
+            c = CoefficientWithUncertainties(c)
+        if "number" not in c.__dict__:
+            c.__dict__["number"] = _i + 1
+        coeffs.append(c)
+    p.coefficients = coeffs
+
+    _write_floattype_list(element, p,
                           "coefficients", "Coefficient",
                           additional_mapping={"number": "number"})
     _write_extra(element, polynomial)
@@ -1300,13 +1352,13 @@ def _write_equipment(parent, equipment, tag="Equipment"):
     _obj2tag(equipment_elem, "SerialNumber", equipment.serial_number)
     if equipment.installation_date:
         etree.SubElement(equipment_elem, "InstallationDate").text = \
-            _format_time(equipment.installation_date)
+            str(equipment.installation_date)
     if equipment.removal_date:
         etree.SubElement(equipment_elem, "RemovalDate").text = \
-            _format_time(equipment.removal_date)
+            str(equipment.removal_date)
     for calibration_date in equipment.calibration_dates:
         etree.SubElement(equipment_elem, "CalibrationDate").text = \
-            _format_time(calibration_date)
+            str(calibration_date)
     _write_extra(parent, equipment)
 
 
@@ -1330,10 +1382,10 @@ def _write_comment(parent, comment):
     etree.SubElement(comment_elem, "Value").text = comment.value
     if comment.begin_effective_time:
         etree.SubElement(comment_elem, "BeginEffectiveTime").text = \
-            _format_time(comment.begin_effective_time)
+            str(comment.begin_effective_time)
     if comment.end_effective_time:
         etree.SubElement(comment_elem, "EndEffectiveTime").text = \
-            _format_time(comment.end_effective_time)
+            str(comment.end_effective_time)
     for author in comment.authors:
         _write_person(comment_elem, author, "Author")
     _write_extra(parent, comment)
@@ -1430,13 +1482,6 @@ def _obj2tag(parent, tag_name, tag_value):
     else:
         text = str(tag_value)
     etree.SubElement(parent, tag_name).text = text
-
-
-def _format_time(value):
-    if value.microsecond == 0:
-        return value.strftime("%Y-%m-%dT%H:%M:%S")
-    else:
-        return value.strftime("%Y-%m-%dT%H:%M:%S.%f")
 
 
 def _read_element(prefix, ns, element, extra):

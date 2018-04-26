@@ -14,6 +14,7 @@ from future.builtins import *  # NOQA
 from future.utils import native_str
 
 import difflib
+from distutils.version import LooseVersion
 import doctest
 import glob
 import inspect
@@ -272,6 +273,11 @@ class ImageComparison(NamedTemporaryFile):
         default will leave the style as is. You may wish to set it to
         ``'default'`` to enable the new style from Matplotlib 2.0, or some
         alternate style, which will work back to Matplotlib 1.4.0.
+    :type no_uploads: bool
+    :param no_uploads: If set to ``True`` no uploads to imgur are attempted, no
+        matter what (e.g. any options to ``obspy-runtests`` that would normally
+        cause an upload attempt). This can be used to forcibly deactivate
+        upload attempts in image tests that are expected to fail.
 
     The class should be used with Python's "with" statement. When setting up,
     the matplotlib rcdefaults are set to ensure consistent image testing.
@@ -305,7 +311,8 @@ class ImageComparison(NamedTemporaryFile):
     """
     def __init__(self, image_path, image_name, reltol=1,
                  adjust_tolerance=True, plt_close_all_enter=True,
-                 plt_close_all_exit=True, style=None, *args, **kwargs):
+                 plt_close_all_exit=True, style=None, no_uploads=False, *args,
+                 **kwargs):
         self.suffix = "." + image_name.split(".")[-1]
         super(ImageComparison, self).__init__(suffix=self.suffix, *args,
                                               **kwargs)
@@ -318,6 +325,7 @@ class ImageComparison(NamedTemporaryFile):
         self.tol = reltol * 3.0
         self.plt_close_all_enter = plt_close_all_enter
         self.plt_close_all_exit = plt_close_all_exit
+        self.no_uploads = no_uploads
 
         if (MATPLOTLIB_VERSION < [1, 4, 0] or
                 (MATPLOTLIB_VERSION[:2] == [1, 4] and style is None)):
@@ -350,11 +358,23 @@ class ImageComparison(NamedTemporaryFile):
                 self.tol *= 5.0
             # Matplotlib 2.0.0 has a bug with the tick placement. This is
             # fixed in 2.0.1 but the tolerance for 2.0.0 has to be much
-            # higher. 10 is an empiric value. The tick placement potentially
+            # higher. 12 is an empiric value. The tick placement potentially
             # influences the axis locations and then the misfit is really
             # quite high.
             elif [2, 0, 0] <= MATPLOTLIB_VERSION < [2, 0, 1]:
-                self.tol *= 10
+                self.tol *= 12
+
+            # One last pass depending on the freetype version.
+            # XXX: Should eventually be handled differently!
+            try:
+                from matplotlib import ft2font
+            except ImportError:
+                pass
+            else:
+                if hasattr(ft2font, "__freetype_version__"):
+                    if (LooseVersion(ft2font.__freetype_version__) >=
+                            LooseVersion("2.8.0")):
+                        self.tol *= 10
 
     def __enter__(self):
         """
@@ -455,7 +475,7 @@ class ImageComparison(NamedTemporaryFile):
                 raise ImageComparisonException(msg)
             raise
         # simply reraise on any other unhandled exceptions
-        except:
+        except Exception:
             failed = True
             raise
         # if image comparison not raises by itself, the test failed if we get a
@@ -561,19 +581,36 @@ class ImageComparison(NamedTemporaryFile):
 
     def _upload_images(self):
         """
-        Uploads images to imgur.
+        Uploads images to imgur unless explicitly deactivated with option
+        `no_uploads` (to speed up tests that are expected to fail).
 
         :returns: ``dict`` with links to uploaded images or ``str`` with
             message if upload failed
         """
+        if self.no_uploads:
+            return "Upload to imgur deactivated with option 'no_uploads'."
         try:
             import pyimgur
             # try to get imgur client id from environment
             imgur_clientid = \
                 os.environ.get("OBSPY_IMGUR_CLIENTID") or "53b182544dc5d89"
+            imgur_client_secret = \
+                os.environ.get("OBSPY_IMGUR_CLIENT_SECRET", None)
+            imgur_client_refresh_token = \
+                os.environ.get("OBSPY_IMGUR_REFRESH_TOKEN", None)
             # upload images and return urls
             links = {}
-            imgur = pyimgur.Imgur(imgur_clientid)
+            imgur = pyimgur.Imgur(imgur_clientid,
+                                  client_secret=imgur_client_secret,
+                                  refresh_token=imgur_client_refresh_token)
+            if imgur_client_secret and imgur_client_refresh_token:
+                try:
+                    imgur.refresh_access_token()
+                except Exception as e:
+                    msg = ('Refreshing access token for Imgur API failed '
+                           '(caught {}: {!s}).)').format(e.__class__.__name__,
+                                                         e)
+                    warnings.warn(msg)
             if os.path.exists(self.baseline_image):
                 up = imgur.upload_image(self.baseline_image, title=self.name)
                 links['expected'] = up.link
@@ -667,6 +704,52 @@ def get_all_py_files():
         py_files.update([os.path.abspath(os.path.join(dirpath, i)) for i in
                          filenames if i.endswith(".py")])
     return sorted(py_files)
+
+
+class WarningsCapture(object):
+    """
+    Try hard to capture all warnings.
+
+    Aims to be a reliable drop-in replacement for built-in
+    warnings.catch_warnings() context manager.
+
+    Based on pytest's _DeprecatedCallContext context manager.
+    """
+    def __enter__(self):
+        self.captured_warnings = []
+        self._old_warn = warnings.warn
+        self._old_warn_explicit = warnings.warn_explicit
+        warnings.warn_explicit = self._warn_explicit
+        warnings.warn = self._warn
+        return self
+
+    def _warn_explicit(self, message, category, *args, **kwargs):
+        self.captured_warnings.append(
+            warnings.WarningMessage(message=category(message),
+                                    category=category,
+                                    filename="", lineno=0))
+
+    def _warn(self, message, category=None, *args, **kwargs):
+        if isinstance(message, Warning):
+            self.captured_warnings.append(
+                warnings.WarningMessage(
+                    message=category(message), category=category or Warning,
+                    filename="", lineno=0))
+        else:
+            self.captured_warnings.append(
+                warnings.WarningMessage(
+                    message=category(message), category=category,
+                    filename="", lineno=0))
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        warnings.warn_explicit = self._old_warn_explicit
+        warnings.warn = self._old_warn
+
+    def __len__(self):
+        return len(self.captured_warnings)
+
+    def __getitem__(self, key):
+        return self.captured_warnings[key]
 
 
 if __name__ == '__main__':

@@ -1,5 +1,5 @@
 """
-obspy.imaging - Plotting Routines for ObsPy
+obspy.imaging - Plotting routines for ObsPy
 ===========================================
 This module provides routines for plotting and displaying often used in
 seismology. It can currently plot waveform data, generate spectrograms and draw
@@ -106,8 +106,7 @@ Draws a beach ball diagram of an earthquake focal mechanism.
 
     >>> from obspy.imaging.beachball import beachball
     >>> np1 = [150, 87, 1]
-    >>> beachball(np1) #doctest: +ELLIPSIS
-    <matplotlib.figure.Figure object at 0x...>
+    >>> fig = beachball(np1)  # doctest: +ELLIPSIS
 
     .. plot::
 
@@ -125,8 +124,7 @@ Draws a beach ball diagram of an earthquake focal mechanism.
 
     >>> from obspy.imaging.beachball import beachball
     >>> mt = [-2.39, 1.04, 1.35, 0.57, -2.94, -0.94]
-    >>> beachball(mt) #doctest: +ELLIPSIS
-    <matplotlib.figure.Figure object at 0x...>
+    >>> fig = beachball(mt) #doctest: +ELLIPSIS
 
     .. plot::
 

@@ -12,7 +12,9 @@ Test suite for the inventory class.
 from __future__ import (absolute_import, division, print_function,
                         unicode_literals)
 from future.builtins import *  # NOQA
+from future.utils import PY2, native_str
 
+import builtins
 import os
 import unittest
 import warnings
@@ -25,6 +27,7 @@ from obspy import UTCDateTime, read_inventory, read_events
 from obspy.core.compatibility import mock
 from obspy.core.util import (
     BASEMAP_VERSION, CARTOPY_VERSION, MATPLOTLIB_VERSION)
+from obspy.core.util.base import _get_entry_points
 from obspy.core.util.testing import ImageComparison
 from obspy.core.inventory import (Channel, Inventory, Network, Response,
                                   Station)
@@ -140,6 +143,38 @@ class InventoryTestCase(unittest.TestCase):
         # 3 - unknown SEED ID should raise exception
         self.assertRaises(Exception, inv.get_coordinates, 'BW.RJOB..XXX')
 
+    def test_get_orientation(self):
+        """
+        Test extracting orientation
+        """
+        expected = {u'azimuth': 90.0,
+                    u'dip': 0.0}
+        channels = [Channel(code='EHZ',
+                            location_code='',
+                            start_date=UTCDateTime('2007-01-01'),
+                            latitude=47.737166999999999,
+                            longitude=12.795714,
+                            elevation=860.0,
+                            depth=0.0,
+                            azimuth=90.0,
+                            dip=0.0)]
+        stations = [Station(code='RJOB',
+                            latitude=0.0,
+                            longitude=0.0,
+                            elevation=0.0,
+                            channels=channels)]
+        networks = [Network('BW', stations=stations)]
+        inv = Inventory(networks=networks, source='TEST')
+        # 1
+        orientation = inv.get_orientation('BW.RJOB..EHZ',
+                                          UTCDateTime('2010-01-01T12:00'))
+        self.assertEqual(sorted(orientation.items()), sorted(expected.items()))
+        # 2 - without datetime
+        orientation = inv.get_orientation('BW.RJOB..EHZ')
+        self.assertEqual(sorted(orientation.items()), sorted(expected.items()))
+        # 3 - unknown SEED ID should raise exception
+        self.assertRaises(Exception, inv.get_orientation, 'BW.RJOB..XXX')
+
     def test_response_plot(self):
         """
         Tests the response plot.
@@ -218,6 +253,95 @@ class InventoryTestCase(unittest.TestCase):
         inv = read_inventory()
         self.assertEqual(len(inv), len(inv.networks))
         self.assertEqual(len(inv), 2)
+
+    def test_inventory_remove(self):
+        """
+        Test for the Inventory.remove() method.
+        """
+        inv = read_inventory()
+
+        # Currently contains 30 channels.
+        self.assertEqual(sum(len(sta) for net in inv for sta in net), 30)
+
+        # No arguments, everything should be removed, as `None` values left in
+        # network/station/location/channel are interpreted as wildcards.
+        inv_ = inv.remove()
+        self.assertEqual(len(inv_), 0)
+
+        # remove one entire network code
+        for network in ['GR', 'G?', 'G*', '?R']:
+            inv_ = inv.remove(network=network)
+            self.assertEqual(len(inv_), 1)
+            self.assertEqual(inv_[0].code, 'BW')
+            self.assertEqual(len(inv_[0]), 3)
+            for sta in inv_[0]:
+                self.assertEqual(len(sta), 3)
+
+        # remove one specific network/station
+        for network in ['GR', 'G?', 'G*', '?R']:
+            for station in ['FUR', 'F*', 'F??', '*R']:
+                inv_ = inv.remove(network=network, station=station)
+                self.assertEqual(len(inv_), 2)
+                self.assertEqual(inv_[0].code, 'GR')
+                self.assertEqual(len(inv_[0]), 1)
+                for sta in inv_[0]:
+                    self.assertEqual(len(sta), 9)
+                    self.assertEqual(sta.code, 'WET')
+                self.assertEqual(inv_[1].code, 'BW')
+                self.assertEqual(len(inv_[1]), 3)
+                for sta in inv_[1]:
+                    self.assertEqual(len(sta), 3)
+                    self.assertEqual(sta.code, 'RJOB')
+
+        # remove one specific channel
+        inv_ = inv.remove(channel='*Z')
+        self.assertEqual(len(inv_), 2)
+        self.assertEqual(inv_[0].code, 'GR')
+        self.assertEqual(len(inv_[0]), 2)
+        self.assertEqual(len(inv_[0][0]), 8)
+        self.assertEqual(len(inv_[0][1]), 6)
+        self.assertEqual(inv_[0][0].code, 'FUR')
+        self.assertEqual(inv_[0][1].code, 'WET')
+        self.assertEqual(inv_[1].code, 'BW')
+        self.assertEqual(len(inv_[1]), 3)
+        for sta in inv_[1]:
+            self.assertEqual(len(sta), 2)
+            self.assertEqual(sta.code, 'RJOB')
+        for net in inv_:
+            for sta in net:
+                for cha in sta:
+                    self.assertTrue(cha.code[2] != 'Z')
+
+        # check keep_empty kwarg
+        inv_ = inv.remove(station='R*')
+        self.assertEqual(len(inv_), 1)
+        self.assertEqual(inv_[0].code, 'GR')
+        inv_ = inv.remove(station='R*', keep_empty=True)
+        self.assertEqual(len(inv_), 2)
+        self.assertEqual(inv_[0].code, 'GR')
+        self.assertEqual(inv_[1].code, 'BW')
+        self.assertEqual(len(inv_[1]), 0)
+
+        inv_ = inv.remove(channel='EH*')
+        self.assertEqual(len(inv_), 1)
+        self.assertEqual(inv_[0].code, 'GR')
+        inv_ = inv.remove(channel='EH*', keep_empty=True)
+        self.assertEqual(len(inv_), 2)
+        self.assertEqual(inv_[0].code, 'GR')
+        self.assertEqual(inv_[1].code, 'BW')
+        self.assertEqual(len(inv_[1]), 3)
+        for sta in inv_[1]:
+            self.assertEqual(sta.code, 'RJOB')
+            self.assertEqual(len(sta), 0)
+
+        # some remove calls that don't match anything and should not do
+        # anything
+        for kwargs in [dict(network='AA'),
+                       dict(network='AA', station='FUR'),
+                       dict(network='GR', station='ABCD'),
+                       dict(network='GR', channel='EHZ')]:
+            inv_ = inv.remove(**kwargs)
+            self.assertEqual(inv_, inv)
 
     def test_inventory_select(self):
         """
@@ -398,6 +522,38 @@ class InventoryTestCase(unittest.TestCase):
         )
         for contents_, expected_ in zip(contents, expected):
             self.assertEqual(expected_, _unified_content_strings(contents_))
+
+    def test_read_invalid_filename(self):
+        """
+        Tests that we get a sane error message when calling read_inventory()
+        with a filename that doesn't exist
+        """
+        doesnt_exist = 'dsfhjkfs'
+        for i in range(10):
+            if os.path.exists(doesnt_exist):
+                doesnt_exist += doesnt_exist
+                continue
+            break
+        else:
+            self.fail('unable to get invalid file path')
+        doesnt_exist = native_str(doesnt_exist)
+
+        if PY2:
+            exception_type = getattr(builtins, 'IOError')
+        else:
+            exception_type = getattr(builtins, 'FileNotFoundError')
+        exception_msg = "[Errno 2] No such file or directory: '{}'"
+
+        formats = _get_entry_points(
+            'obspy.plugin.inventory', 'readFormat').keys()
+        # try read_inventory() with invalid filename for all registered read
+        # plugins and also for filetype autodiscovery
+        formats = [None] + list(formats)
+        for format in formats[:1]:
+            with self.assertRaises(exception_type) as e:
+                read_inventory(doesnt_exist, format=format)
+            self.assertEqual(
+                str(e.exception), exception_msg.format(doesnt_exist))
 
 
 @unittest.skipIf(not BASEMAP_VERSION, 'basemap not installed')

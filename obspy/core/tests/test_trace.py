@@ -5,6 +5,7 @@ from future.builtins import *  # NOQA
 
 import math
 import os
+import pickle
 import unittest
 from copy import deepcopy
 import warnings
@@ -2693,6 +2694,50 @@ class TraceTestCase(unittest.TestCase):
         # operation
         self.assertFalse(tr_opt_out.data.flags['C_CONTIGUOUS'])
         self.assertFalse(tr_opt_out.data.flags['F_CONTIGUOUS'])
+
+    def test_header_dict_copied(self):
+        """
+        Regression test for #1934 (collisions when using  the same header
+        dictionary for multiple Trace inits)
+        """
+        header = {'station': 'MS', 'starttime': 1}
+        original_header = deepcopy(header)
+
+        # Init two traces and make sure the original header did not change.
+        tr1 = Trace(data=np.ones(2), header=header)
+        self.assertEqual(header, original_header)
+        tr2 = Trace(data=np.zeros(5), header=header)
+        self.assertEqual(header, original_header)
+
+        self.assertEqual(len(tr1), 2)
+        self.assertEqual(len(tr2), 5)
+        self.assertEqual(tr1.stats.npts, 2)
+        self.assertEqual(tr2.stats.npts, 5)
+
+    def test_pickle(self):
+        """
+        Test that  Trace can be pickled #1989
+        """
+        tr_orig = Trace()
+        tr_pickled = pickle.loads(pickle.dumps(tr_orig, protocol=0))
+        self.assertEqual(tr_orig, tr_pickled)
+        tr_pickled = pickle.loads(pickle.dumps(tr_orig, protocol=1))
+        self.assertEqual(tr_orig, tr_pickled)
+        tr_pickled = pickle.loads(pickle.dumps(tr_orig, protocol=2))
+        self.assertEqual(tr_orig, tr_pickled)
+
+    def test_pickle_soh(self):
+        """
+        Test that trace can be pickled with samplerate = 0 #1989
+        """
+        tr_orig = Trace()
+        tr_orig.stats.sampling_rate = 0
+        tr_pickled = pickle.loads(pickle.dumps(tr_orig, protocol=0))
+        self.assertEqual(tr_orig, tr_pickled)
+        tr_pickled = pickle.loads(pickle.dumps(tr_orig, protocol=1))
+        self.assertEqual(tr_orig, tr_pickled)
+        tr_pickled = pickle.loads(pickle.dumps(tr_orig, protocol=2))
+        self.assertEqual(tr_orig, tr_pickled)
 
 
 def suite():

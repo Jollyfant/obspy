@@ -2,7 +2,9 @@
 from __future__ import (absolute_import, division, print_function,
                         unicode_literals)
 from future.builtins import *  # NOQA
+from future.utils import PY2, native_str
 
+import builtins
 import io
 import os
 import threading
@@ -11,14 +13,15 @@ import unittest
 import warnings
 from copy import deepcopy
 
-from pkg_resources import load_entry_point
 import numpy as np
 
 from obspy import Trace, read
 from obspy.core.compatibility import mock
+from obspy.io.mseed.core import _write_mseed
 from obspy.core.utcdatetime import UTCDateTime
 from obspy.core.util.base import (NamedTemporaryFile, _get_entry_points,
                                   DEFAULT_MODULES, WAVEFORM_ACCEPT_BYTEORDER)
+from obspy.core.util.misc import buffered_load_entry_point, _ENTRY_POINT_CACHE
 
 
 def _get_default_eps(group, subgroup=None):
@@ -46,7 +49,7 @@ class WaveformPluginsTestCase(unittest.TestCase):
                                           'readFormat')
             # using format keyword
             for ep in formats_ep.values():
-                is_format = load_entry_point(
+                is_format = buffered_load_entry_point(
                     ep.dist.key, 'obspy.plugin.waveform.' + ep.name,
                     'isFormat')
                 self.assertFalse(False, is_format(tmpfile))
@@ -166,8 +169,14 @@ class WaveformPluginsTestCase(unittest.TestCase):
         modules for false positives.
         """
         known_false = [
-            os.path.join('seisan', 'tests', 'data', 'SEISAN_Bug',
-                         '2011-09-06-1311-36S.A1032_001BH_Z_MSEED'),
+            os.path.join('seisan', 'tests', 'data',
+                         '2011-09-06-1311-36S.A1032_001BH_Z.mseed'),
+            os.path.join('seisan', 'tests', 'data',
+                         'D1360930.203.mseed'),
+            os.path.join('seisan', 'tests', 'data',
+                         '2005-07-23-1452-04S.CER___030.mseed'),
+            os.path.join('seisan', 'tests', 'data',
+                         '9701-30-1048-54S.MVO_21_1.ascii'),
             os.path.join('core', 'tests', 'data',
                          'IU_ULN_00_LH1_2015-07-18T02.mseed'),
             # That file is not in obspy.io.mseed as it is used to test an
@@ -181,7 +190,10 @@ class WaveformPluginsTestCase(unittest.TestCase):
             os.path.join('io', 'reftek', 'tests', 'data',
                          '2015282_225051_0ae4c_1_2.msd'),
             os.path.join('io', 'reftek', 'tests', 'data',
-                         '2015282_225051_0ae4c_1_3.msd')]
+                         '2015282_225051_0ae4c_1_3.msd'),
+            os.path.join('core', 'tests', 'data', 'ffbx_unrotated_gaps.mseed'),
+            os.path.join('core', 'tests', 'data', 'ffbx_rotated.slist'),
+        ]
         formats_ep = _get_default_eps('obspy.plugin.waveform', 'isFormat')
         formats = list(formats_ep.values())
         # Get all the test directories.
@@ -202,7 +214,7 @@ class WaveformPluginsTestCase(unittest.TestCase):
         # Big loop over every format.
         for format in formats:
             # search isFormat for given entry point
-            is_format = load_entry_point(
+            is_format = buffered_load_entry_point(
                 format.dist.key, 'obspy.plugin.waveform.' + format.name,
                 'isFormat')
             for f, path in paths.items():
@@ -457,29 +469,41 @@ class WaveformPluginsTestCase(unittest.TestCase):
         # Test for stream as well as for trace.
         stream_trace = [read(), read()[0]]
 
+        # get mseed cache name and mseed function
+        mseed_name = "obspy/obspy.plugin.waveform.MSEED/writeFormat"
+        mseed_func = _ENTRY_POINT_CACHE.get(mseed_name, _write_mseed)
+
         for suffix, module_name in formats:
-            # A bit of magic to get the fully qualified function name...
-            fct_name = module_name + "." + load_entry_point(
-                "obspy",
-                "obspy.plugin.waveform.%s" % suffix,
-                "writeFormat").__name__
+            # get a list of dist, group, name.
+            entry_point_list = ["obspy", "obspy.plugin.waveform.%s" % suffix,
+                                "writeFormat"]
+            # load entry point to make sure it is in the cache.
+            buffered_load_entry_point(*entry_point_list)
+            # get the cache name for monkey patching.
+            entry_point_name = '/'.join(entry_point_list)
             # For stream and trace.
             for obj in stream_trace:
                 # Various versions of the suffix.
                 for s in [suffix.capitalize(), suffix.lower(), suffix.upper()]:
-                    with mock.patch(fct_name) as p:
+                    # create a mock function and patch the entry point cache.
+                    write_func = _ENTRY_POINT_CACHE[entry_point_name]
+                    mocked_func = mock.MagicMock(write_func)
+                    mock_dict = {entry_point_name: mocked_func}
+                    with mock.patch.dict(_ENTRY_POINT_CACHE, mock_dict):
                         obj.write("temp." + s)
                     # Make sure the fct has actually been called.
-                    self.assertEqual(p.call_count, 1)
+                    self.assertEqual(mocked_func.call_count, 1)
 
-                    # Manually specifying the format name should overwrite
-                    # this.
-                    with mock.patch("obspy.io.mseed.core._write_mseed") as p:
+                    # Specifying the format name should overwrite this.
+                    mocked_mseed_func = mock.MagicMock(mseed_func)
+                    mseed_mock_dict = {mseed_name: mocked_mseed_func}
+                    with mock.patch.dict(_ENTRY_POINT_CACHE, mseed_mock_dict):
                         obj.write("temp." + s, format="mseed")
-                    self.assertEqual(p.call_count, 1)
+                    self.assertEqual(mocked_mseed_func.call_count, 1)
+                    self.assertEqual(mocked_func.call_count, 1)
 
         # An unknown suffix should raise.
-        with self.assertRaises(TypeError):
+        with self.assertRaises(ValueError):
             for obj in stream_trace:
                 obj.write("temp.random_suffix")
 
@@ -492,6 +516,38 @@ class WaveformPluginsTestCase(unittest.TestCase):
         """
         st = read("/path/to/tarfile_impostor.mseed")
         self.assertEqual(st[0].id, "10.864.1B.004")
+
+    def test_read_invalid_filename(self):
+        """
+        Tests that we get a sane error message when calling read()
+        with a filename that doesn't exist
+        """
+        doesnt_exist = 'dsfhjkfs'
+        for i in range(10):
+            if os.path.exists(doesnt_exist):
+                doesnt_exist += doesnt_exist
+                continue
+            break
+        else:
+            self.fail('unable to get invalid file path')
+        doesnt_exist = native_str(doesnt_exist)
+
+        if PY2:
+            exception_type = getattr(builtins, 'IOError')
+        else:
+            exception_type = getattr(builtins, 'FileNotFoundError')
+        exception_msg = "[Errno 2] No such file or directory: '{}'"
+
+        formats = _get_entry_points(
+            'obspy.plugin.catalog', 'readFormat').keys()
+        # try read_inventory() with invalid filename for all registered read
+        # plugins and also for filetype autodiscovery
+        formats = [None] + list(formats)
+        for format in formats:
+            with self.assertRaises(exception_type) as e:
+                read(doesnt_exist, format=format)
+            self.assertEqual(
+                str(e.exception), exception_msg.format(doesnt_exist))
 
 
 def suite():

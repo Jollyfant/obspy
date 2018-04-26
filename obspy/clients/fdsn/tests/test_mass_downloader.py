@@ -34,7 +34,8 @@ from obspy.clients.fdsn.mass_downloader import (domain, Restrictions,
 from obspy.clients.fdsn.mass_downloader.utils import (
     filter_channel_priority, get_stationxml_filename, get_mseed_filename,
     get_stationxml_contents, SphericalNearestNeighbour, safe_delete,
-    download_stationxml, download_and_split_mseed_bulk)
+    download_stationxml, download_and_split_mseed_bulk,
+    _get_stationxml_contents_slow)
 from obspy.clients.fdsn.mass_downloader.download_helpers import (
     Channel, TimeInterval, Station, STATUS, ClientDownloadHelper)
 
@@ -1007,6 +1008,17 @@ class DownloadHelpersUtilTestCase(unittest.TestCase):
                                  cha.code, cha.start_date, cha.end_date,
                                  filename)])
 
+    def test_fast_vs_slow_get_stationxml_contents(self):
+        """
+        Both should of course return the same result.
+
+        For some old lxml versions both will be using the same function,
+        but this is still a useful test.
+        """
+        filename = os.path.join(self.data, "AU.MEEK.xml")
+        self.assertEqual(get_stationxml_contents(filename),
+                         _get_stationxml_contents_slow(filename))
+
     def test_channel_str_representation(self):
         """
         Test the string representations of channel objects.
@@ -1255,7 +1267,9 @@ class StationTestCase(unittest.TestCase):
 
         with mock.patch("obspy.clients.fdsn.mass_downloader"
                         ".utils.safe_delete") as p1, \
-                mock.patch("obspy.io.mseed.util.get_start_and_end_time") as p2:
+                mock.patch("obspy.io.mseed.util.get_start_and_end_time") \
+                as p2, \
+                mock.patch("os.path.isfile") as p_isfile:  # NOQA
             p2.return_value = (obspy.UTCDateTime(1), obspy.UTCDateTime(2))
             # By default, nothing will happen.
             station.sanitize_downloads(logger)
@@ -2335,6 +2349,76 @@ class ClientDownloadHelperTestCase(unittest.TestCase):
             os.path.join(self.data, "channel_level_fdsn.txt"))
         c.get_availability()
         self.assertEqual([("AK", "BAGL")],
+                         sorted(c.stations.keys()))
+
+        # When 'channel' or 'location' are set they should override
+        # 'channel_priorities' and 'location_priorities'. If this isn't
+        # happening this test will fail, as we're requesting data
+        # with a channel and location what are not covered by the default
+        # priorities lists.
+        #
+        # The tests are a bit strange in the way that the availability
+        # filtering does not enforce the set "location" + "channel" but only
+        # the priority lists. Location + channel are already set at the queries
+        # to the datacenters so they can be assumed to be correct.
+        #
+        # The availability information contains uncommon channel + location
+        # combinations and only one station will be selected first.
+        self.restrictions = Restrictions(
+            starttime=obspy.UTCDateTime(2001, 1, 1),
+            endtime=obspy.UTCDateTime(2015, 1, 1),
+            # This will be ignored as soon as channel and location are being
+            # set.
+            channel_priorities=["EH*", "BH*"],
+            location_priorities=["", "01"])
+        c = self._init_client()
+        c.client.get_stations.return_value = obspy.read_inventory(
+            os.path.join(self.data, "uncommon_channel_location.txt"))
+        c.get_availability()
+        self.assertEqual([("AK", "BAGLD")], sorted(c.stations.keys()))
+
+        # With a set location, the channel priorities are still active.
+        self.restrictions = Restrictions(
+            starttime=obspy.UTCDateTime(2001, 1, 1),
+            endtime=obspy.UTCDateTime(2015, 1, 1),
+            channel_priorities=["EH*", "BH*"],
+            location_priorities=["", "01"],
+            location="31")
+        c = self._init_client()
+        c.client.get_stations.return_value = obspy.read_inventory(
+            os.path.join(self.data, "uncommon_channel_location.txt"))
+        c.get_availability()
+        self.assertEqual([("AK", "BAGLC"), ("AK", "BAGLD")],
+                         sorted(c.stations.keys()))
+
+        # Same with the set channel.
+        self.restrictions = Restrictions(
+            starttime=obspy.UTCDateTime(2001, 1, 1),
+            endtime=obspy.UTCDateTime(2015, 1, 1),
+            channel_priorities=["EH*", "BH*"],
+            location_priorities=["", "01"],
+            channel="RST")
+        c = self._init_client()
+        c.client.get_stations.return_value = obspy.read_inventory(
+            os.path.join(self.data, "uncommon_channel_location.txt"))
+        c.get_availability()
+        self.assertEqual([("AK", "BAGLB"), ("AK", "BAGLD")],
+                         sorted(c.stations.keys()))
+
+        # If both are set, the priorities are properly ignored.
+        self.restrictions = Restrictions(
+            starttime=obspy.UTCDateTime(2001, 1, 1),
+            endtime=obspy.UTCDateTime(2015, 1, 1),
+            channel_priorities=["EH*", "BH*"],
+            location_priorities=["", "01"],
+            location="31",
+            channel="RST")
+        c = self._init_client()
+        c.client.get_stations.return_value = obspy.read_inventory(
+            os.path.join(self.data, "uncommon_channel_location.txt"))
+        c.get_availability()
+        self.assertEqual([("AK", "BAGLA"), ("AK", "BAGLB"), ("AK", "BAGLC"),
+                          ("AK", "BAGLD")],
                          sorted(c.stations.keys()))
 
     def test_excluding_networks_and_stations_with_an_inventory_object(self):

@@ -13,6 +13,7 @@ Bonaimé, Sébastien
 Carothers, Lloyd
 Chamberlain, Calum
 Chambers, Derrick
+Chen, Zhao
 Clark, Adam
 Danecek, Peter
 van Driel, Martin
@@ -38,11 +39,14 @@ Kremers, Simon
 Kress, Victor
 Krieger, Lars
 Krischer, Lion
+Kula, Damian
 Käufl, Paul
 Köhler, Andreas
 Lecocq, Thomas
 Leeman, John
+Legovini, Paride
 Lesage, Philippe
+Li, Yulin
 Lomax, Anthony
 Lopes, Rui L.
 MacCarthy, Jonathan
@@ -73,10 +77,12 @@ Stange, Stefan
 Sullivan, Benjamin
 Tian, Dongdong
 Trabant, Chad
+Trani, Luca
 Uieda, Leonardo
 Walker, Andrew
 Walther, Marcus
 Wassermann, Joachim
+van Wijk, Kasper
 Williams, Mark C.
 Winkelman, Andrew
 Zaccarelli, Riccardo

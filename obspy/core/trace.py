@@ -131,7 +131,9 @@ class Stats(AttribDict):
         >>> trace.stats.npts
         4
     """
+    # set of read only attrs
     readonly = ['endtime']
+    # default values
     defaults = {
         'sampling_rate': 1.0,
         'delta': 1.0,
@@ -144,6 +146,15 @@ class Stats(AttribDict):
         'location': '',
         'channel': '',
     }
+    # keys which need to refresh derived values
+    _refresh_keys = {'delta', 'sampling_rate', 'starttime', 'npts'}
+    # dict of required types for certain attrs
+    _types = {
+        'network': (str, native_str),
+        'station': (str, native_str),
+        'location': (str, native_str),
+        'channel': (str, native_str),
+    }
 
     def __init__(self, header={}):
         """
@@ -153,18 +164,21 @@ class Stats(AttribDict):
     def __setitem__(self, key, value):
         """
         """
-        # keys which need to refresh derived values
-        if key in ['delta', 'sampling_rate', 'starttime', 'npts']:
+        if key in self._refresh_keys:
             # ensure correct data type
             if key == 'delta':
                 key = 'sampling_rate'
-                value = 1.0 / float(value)
+                try:
+                    value = 1.0 / float(value)
+                except ZeroDivisionError:
+                    value = 0.0
             elif key == 'sampling_rate':
                 value = float(value)
             elif key == 'starttime':
                 value = UTCDateTime(value)
             elif key == 'npts':
-                value = int(value)
+                if not isinstance(value, int):
+                    value = int(value)
             # set current key
             super(Stats, self).__setitem__(key, value)
             # set derived value: delta
@@ -283,6 +297,7 @@ class Trace(object):
         # set some defaults if not set yet
         if header is None:
             header = {}
+        header = deepcopy(header)
         header.setdefault('npts', len(data))
         self.stats = Stats(header)
         # set data without changing npts in stats object (for headonly option)
@@ -1244,13 +1259,11 @@ class Trace(object):
             include_partial_windows=include_partial_windows)
 
         if len(windows) < 1:
-            raise StopIteration
+            return
 
         for start, stop in windows:
             yield self.slice(start, stop,
                              nearest_sample=nearest_sample)
-
-        raise StopIteration
 
     def verify(self):
         """
@@ -2108,7 +2121,7 @@ seismometer_correction_simulation.html#using-a-resp-file>`_.
                                taper_sides[len(taper_sides) - wlen:]))
 
         # Convert data if it's not a floating point type.
-        if not np.issubdtype(self.data.dtype, float):
+        if not np.issubdtype(self.data.dtype, np.floating):
             self.data = np.require(self.data, dtype=np.float64)
 
         self.data *= taper
@@ -2173,7 +2186,7 @@ seismometer_correction_simulation.html#using-a-resp-file>`_.
             return self
 
         # Convert data if it's not a floating point type.
-        if not np.issubdtype(self.data.dtype, float):
+        if not np.issubdtype(self.data.dtype, np.floating):
             self.data = np.require(self.data, dtype=np.float64)
 
         self.data /= abs(norm)
@@ -2412,7 +2425,7 @@ seismometer_correction_simulation.html#using-a-resp-file>`_.
                 starttime, dt, npts, type=method, *args, **kwargs))
             self.stats.starttime = UTCDateTime(starttime)
             self.stats.delta = dt
-        except:
+        except Exception:
             # Revert the start time change if something went wrong.
             if time_shift:
                 self.stats.starttime -= time_shift
@@ -2443,7 +2456,7 @@ seismometer_correction_simulation.html#using-a-resp-file>`_.
         >>> from obspy import read, UTCDateTime
         >>> tr = read()[0]
 
-        >>> tr.times()
+        >>> tr.times()  # doctest: +NORMALIZE_WHITESPACE
         array([  0.00000000e+00,   1.00000000e-02,   2.00000000e-02, ...,
                  2.99700000e+01,   2.99800000e+01,   2.99900000e+01])
 
@@ -2493,8 +2506,8 @@ seismometer_correction_simulation.html#using-a-resp-file>`_.
                 [self.stats.starttime + t_ for t_ in time_array])
         elif type == "matplotlib":
             from matplotlib.dates import date2num
-            time_array = date2num([(self.stats.starttime + t_).datetime
-                                   for t_ in time_array])
+            time_array = (date2num(self.stats.starttime.datetime)
+                          + time_array / 86400.0)
         else:
             msg = "Invalid `type`: {}".format(type)
             raise ValueError(msg)

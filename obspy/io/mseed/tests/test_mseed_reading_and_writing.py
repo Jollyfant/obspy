@@ -18,6 +18,7 @@ import numpy as np
 
 from obspy import Stream, Trace, UTCDateTime, read
 from obspy.core import AttribDict
+from obspy.core.compatibility import from_buffer
 from obspy.core.util import CatchOutput, NamedTemporaryFile
 from obspy.io.mseed import (util, InternalMSEEDWarning,
                             InternalMSEEDError)
@@ -235,7 +236,8 @@ class MSEEDReadingAndWritingTestCase(unittest.TestCase):
         mseed_filenames = ['BW.BGLD.__.EHE.D.2008.001.first_10_records',
                            'gaps.mseed', 'qualityflags.mseed', 'test.mseed',
                            'timingquality.mseed', 'blockette008.mseed',
-                           'fullseed.mseed', 'various_noise_records.mseed']
+                           'fullseed.mseed', 'various_noise_records.mseed',
+                           'rt130_sr0_cropped.mseed']
 
         # Non Mini-SEED file names.
         non_mseed_filenames = ['test_mseed_reading_and_writing.py',
@@ -756,8 +758,8 @@ class MSEEDReadingAndWritingTestCase(unittest.TestCase):
                     # ObsPy
                     with open(tempfile, "rb") as fp:
                         s = fp.read()
-                    data = np.fromstring(s[56:256],
-                                         dtype=native_str(btype + dtype))
+                    data = from_buffer(s[56:256],
+                                       dtype=native_str(btype + dtype))
                     np.testing.assert_array_equal(data, st[0].data[:len(data)])
                     # Read the binary chunk of data with ObsPy
                     st2 = read(tempfile)
@@ -768,7 +770,7 @@ class MSEEDReadingAndWritingTestCase(unittest.TestCase):
         Tests writing small ASCII strings.
         """
         st = Stream()
-        st.append(Trace(data=np.fromstring("A" * 8, native_str("|S1"))))
+        st.append(Trace(data=from_buffer("A" * 8, native_str("|S1"))))
         with NamedTemporaryFile() as tf:
             tempfile = tf.name
             st.write(tempfile, format="MSEED")
@@ -829,10 +831,10 @@ class MSEEDReadingAndWritingTestCase(unittest.TestCase):
         files = {
             os.path.join(path, "smallASCII.mseed"):
             (native_str('|S1'), 'a', 0,
-             np.fromstring('ABCDEFGH', dtype=native_str('|S1'))),
+             from_buffer('ABCDEFGH', dtype=native_str('|S1'))),
             # Tests all ASCII letters.
             os.path.join(path, "fullASCII.mseed"):
-            (native_str('|S1'), 'a', 0, np.fromstring(
+            (native_str('|S1'), 'a', 0, from_buffer(
                 """ !"#$%&'()*+,-./""" +
                 """0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\]^_`""" +
                 """abcdefghijklmnopqrstuvwxyz{|}~""",
@@ -1148,8 +1150,8 @@ class MSEEDReadingAndWritingTestCase(unittest.TestCase):
         self.assertEqual(len(w), 1)
         self.assertEqual(w[0].category, InternalMSEEDWarning)
 
-        self.assertIn(b"calling msr_parse with", out.stdout)
-        self.assertIn(b"buflen=512, reclen=-1, dataflag=0, verbose=2",
+        self.assertIn("calling msr_parse with", out.stdout)
+        self.assertIn("buflen=512, reclen=-1, dataflag=0, verbose=2",
                       out.stdout)
         self.assertEqual(st[0].stats.station, 'UH3')
 
@@ -1545,6 +1547,24 @@ class MSEEDReadingAndWritingTestCase(unittest.TestCase):
             'filesize': 14336,
             'number_of_records': 10,
             'record_length': 512})
+
+    def test_read_mseed_sr0(self):
+        """
+        Test reading a small mseed ASCII LOG file.
+        """
+        filename = os.path.join(self.path, 'data', 'rt130_sr0_cropped.mseed')
+        st = read(filename)
+        tr = st[0]
+        self.assertEqual(0.0, tr.stats.sampling_rate)
+        self.assertEqual(tr.stats.mseed,
+                         {'dataquality': 'D',
+                          'number_of_records': 1,
+                          'encoding': 'ASCII',
+                          'byteorder': '>',
+                          'record_length': 512,
+                          'filesize': 2560})
+        self.assertEqual(''.join(tr.data.astype(str)),
+                         '001:00:00:00 REF TEK 130\r\n')
 
 
 def suite():

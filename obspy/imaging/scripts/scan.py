@@ -1,6 +1,8 @@
 #!/usr/bin/env python
 # 2010-01-27 Moritz Beyreuther
 """
+Scan a directory to determine the data availability.
+
 Scan all specified files/directories, determine which time spans are covered
 for which stations and plot everything in summarized in one overview plot.
 Start times of traces with available data are marked by crosses, gaps are
@@ -305,7 +307,7 @@ class Scanner(object):
         :param endtime: Whether to use a fixed end time for the plot and
             data percentage calculation.
         :type seed_ids: list of str
-        :param endtime: Whether to consider only a specific set of SEED IDs
+        :param seed_ids: Whether to consider only a specific set of SEED IDs
             (e.g. ``seed_ids=["GR.FUR..BHZ", "GR.WET..BHZ"]``) or just all SEED
             IDs encountered in data (if left ``None``).
         """

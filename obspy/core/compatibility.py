@@ -1,10 +1,15 @@
 # -*- coding: utf-8 -*-
 """
-Py3k compatibility module
+ObsPy's compatibility layer.
+
+Includes things to easy dealing with Py2/Py3 differences as well as making
+it work with various versions of our dependencies.
 """
 from future.utils import PY2
 
 import io
+import json
+import sys
 
 import numpy as np
 
@@ -18,9 +23,18 @@ except ImportError:
     pass
 
 if PY2:
-    from string import maketrans
+    from string import maketrans  # NOQA
+    from urlparse import urlparse  # NOQA
 else:
-    maketrans = bytes.maketrans
+    maketrans = bytes.maketrans  # NOQA
+    from urllib.parse import urlparse  # NOQA
+
+
+# Define the string types.
+if PY2:
+    string_types = (basestring,)  # NOQA
+else:
+    string_types = (str,)  # NOQA
 
 
 # NumPy does not offer the from_buffer method under Python 3 and instead
@@ -31,12 +45,22 @@ if PY2:
         if isinstance(dtype, unicode):  # noqa
             dtype = str(dtype)
         if data:
+            try:
+                data = data.encode()
+            except Exception:
+                pass
             return np.frombuffer(data, dtype=dtype).copy()
         else:
             return np.array([], dtype=dtype)
+    import ConfigParser as configparser  # NOQA
 else:
     def from_buffer(data, dtype):
+        try:
+            data = data.encode()
+        except Exception:
+            pass
         return np.array(memoryview(data)).view(dtype).copy()  # NOQA
+    import configparser  # NOQA
 
 
 def is_text_buffer(obj):
@@ -109,10 +133,95 @@ def round_away(number):
     >>> round_away(-11.0)
     -11
     """
-
     floor = np.floor(number)
     ceil = np.ceil(number)
     if (floor != ceil) and (abs(number - floor) == abs(ceil - number)):
         return int(int(number) + int(np.sign(number)))
     else:
         return int(np.round(number))
+
+
+if sys.version_info[0] < 3:
+    def py3_round(number, ndigits=None):
+        """
+        Similar function to python 3's built-in round function.
+
+        Returns a float if ndigits is greater than 0, else returns an integer.
+
+        Note:
+        This function should be replace by the builtin round when obspy
+        drops support for python 2.7.
+        Unlike python'3 rounding, this function always rounds up on half
+        increments rather than implementing banker's rounding.
+
+        :type number: int or float
+        :param number: A real number to be rounded
+        :type ndigits: int
+        :param ndigits: number of digits
+        :return: An int if ndigites <= 0, else a float rounded to ndigits.
+        """
+        if ndigits is None or ndigits <= 0:
+            mult = 10 ** -(ndigits or 0)
+            return ((int(number) + mult // 2) // mult) * mult
+        else:
+            return round(number, ndigits)
+else:
+    py3_round = round
+
+
+def get_json_from_response(r):
+    """
+    Get a JSON response in a way that also works for very old request
+    versions.
+
+    :type r: :class:`requests.Response
+    :param r: The server's response.
+    """
+    if hasattr(r, "json"):
+        if isinstance(r.json, dict):
+            return r.json
+        return r.json()
+
+    c = r.content
+    try:
+        c = c.decode()
+    except Exception:
+        pass
+    return json.loads(c)
+
+
+def get_text_from_response(r):
+    """
+    Get a text response in a way that also works for very old request versions.
+
+    :type r: :class:`requests.Response
+    :param r: The server's response.
+    """
+    if hasattr(r, "text"):
+        return r.text
+
+    c = r.content
+    try:
+        c = c.decode()
+    except Exception:
+        pass
+    return c
+
+
+def get_reason_from_response(r):
+    """
+    Get the status text.
+
+    :type r: :class:`requests.Response
+    :param r: The server's response.
+    """
+    # Very old requests version might not have the reason attribute.
+    if hasattr(r, "reason"):
+        c = r.reason
+    else:  # pragma: no cover
+        c = r.raw.reason
+
+    if hasattr(c, "encode"):
+        c = c.encode()
+
+    return c
