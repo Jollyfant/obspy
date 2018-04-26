@@ -50,12 +50,13 @@ class SC3MLTestCase(unittest.TestCase):
         read_inventory(os.path.join(self.data_dir, "version0.7"))
         read_inventory(os.path.join(self.data_dir, "version0.8"))
         read_inventory(os.path.join(self.data_dir, "version0.9"))
+        read_inventory(os.path.join(self.data_dir, "version0.10"))
 
         with self.assertRaises(ValueError) as e:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
                 read_inventory(os.path.join(self.data_dir,
-                                            "version0.10"))
+                                            "version0.11"))
 
         self.assertEqual(e.exception.args[0], "Schema version not supported.")
 
@@ -69,7 +70,6 @@ class SC3MLTestCase(unittest.TestCase):
         sc3ml_bytes.seek(0, 0)
         sc3ml_lines = sc3ml_bytes.read().decode().splitlines()
         sc3ml_arr = [_i.strip() for _i in sc3ml_lines if _i.strip()]
-
         stationxml_bytes = io.BytesIO()
         self.stationxml_inventory.write(stationxml_bytes, "STATIONXML")
         stationxml_bytes.seek(0, 0)
@@ -106,6 +106,15 @@ class SC3MLTestCase(unittest.TestCase):
         sc3ml_content = self.sc3ml_inventory.get_contents()
         for sc3ml, stationxml in zip(stationxml_content, sc3ml_content):
             self.assertEqual(sc3ml, stationxml)
+
+    def test_sc3ml_v010(self):
+        """
+        Test reading SC3ML schema version 0.10
+        """
+        data_file = os.path.join(self.data_dir, "sc3ml_010.xml")
+        inv = read_inventory(data_file)
+        for stage in inv[0][0][0].response.response_stages:
+          print(stage)
 
     def test_compare_response(self):
         """

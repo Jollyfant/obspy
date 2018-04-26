@@ -25,6 +25,7 @@ import warnings
 import obspy
 
 from lxml import etree
+from scipy.signal import tf2zpk
 from obspy.core.util.obspy_types import (ComplexWithUncertainties,
                                          FloatWithUncertaintiesAndUnit)
 from obspy.core.inventory import (Azimuth, ClockDrift, Dip,
@@ -38,7 +39,7 @@ from obspy.io.stationxml.core import _read_floattype
 
 SOFTWARE_MODULE = "ObsPy %s" % obspy.__version__
 SOFTWARE_URI = "http://www.obspy.org"
-SCHEMA_VERSION = ["0.7", "0.8", "0.9"]
+SCHEMA_VERSION = ["0.7", "0.8", "0.9", "0.10"]
 
 
 def _is_sc3ml(path_or_file_object):
@@ -127,7 +128,7 @@ def _read_sc3ml(path_or_file_object):
     """
     root = etree.parse(path_or_file_object).getroot()
 
-    # Code can be used for version 0.7, 0.8, and 0.9
+    # Code can be used for version 0.7, 0.8, 0.9, and 0.10
     basespace = "http://geofon.gfz-potsdam.de/ns/seiscomp3-schema"
     for version in SCHEMA_VERSION:
         namespace = "%s/%s" % (basespace, version)
@@ -398,7 +399,11 @@ def _read_channel(inventory_root, cha_element, _ns):
     if sensor_element is not None:
         response_id = sensor_element.get("response")
         if response_id is not None:
-            resp_type = response_id.split("#")[0]
+            # Change in v0.10 the way identifiers are delimited (# -> /)
+            if len(response_id.split("#")) == 1:
+              resp_type = response_id.split("/")[0]
+            else:
+              resp_type = response_id.split("#")[0]
             if resp_type == 'ResponsePAZ':
                 search = "responsePAZ[@publicID='" + response_id + "']"
                 response_element = inventory_root.find(_ns(search))
@@ -458,7 +463,7 @@ def _read_channel(inventory_root, cha_element, _ns):
 
     # Begin to collect digital/analogue filter chains
     # This information is stored as an array in the datalogger element
-    response_fir_id = []
+    response_dig_id = []
     response_paz_id = []
     if data_log_element is not None:
         # Find the decimation element with a particular num/denom
@@ -473,13 +478,13 @@ def _read_channel(inventory_root, cha_element, _ns):
         digital_filter_chain = _tag2obj(decim_element,
                                         _ns("digitalFilterChain"), str)
         if digital_filter_chain is not None:
-            response_fir_id = digital_filter_chain.split(" ")
+            response_dig_id = digital_filter_chain.split(" ")
 
     channel.response = _read_response(inventory_root, sensor_element,
                                       response_element, cha_element,
                                       data_log_element, _ns,
                                       channel.sample_rate,
-                                      response_fir_id, response_paz_id)
+                                      response_dig_id, response_paz_id)
 
     return channel
 
@@ -545,11 +550,18 @@ def _read_response(root, sen_element, resp_element, cha_element,
     samp_rate = float(samp_rate)
     fir_stage_rates = []
     if len(fir):
+        # Reverse the chain
         fir = fir[::-1]
         for fir_id in fir:
-            # get the particular fir stage decimation factor
+            # get the particular stage decimation factor
             # multiply the decimated sample rate by this factor
-            search = "responseFIR[@publicID='" + fir_id + "']"
+            # These may be FIR, IIR or PAZ
+            if "ResponseFIR" in fir_id:
+              search = "responseFIR[@publicID='" + fir_id + "']"
+            elif "ResponseIIR" in fir_id:
+              search = "responseIIR[@publicID='" + fir_id + "']"
+            elif "ResponsePAZ" in fir_id:
+              search = "responsePAZ[@publicID='" + fir_id + "']"
             fir_element = root.find(_ns(search))
             if fir_element is None:
                 continue
@@ -618,7 +630,12 @@ def _read_response(root, sen_element, resp_element, cha_element,
     # Input unit: COUNTS
     # Output unit: COUNTS
     for fir_id, rate in zip(fir, fir_stage_rates):
-        search = "responseFIR[@publicID='" + fir_id + "']"
+        if "ResponseFIR" in fir_id:
+          search = "responseFIR[@publicID='" + fir_id + "']"
+        elif "ResponseIIR" in fir_id:
+          search = "responseIIR[@publicID='" + fir_id + "']"
+        elif "ResponsePAZ" in fir_id:
+          search = "responsePAZ[@publicID='" + fir_id + "']"
         stage_element = root.find(_ns(search))
         if stage_element is None:
             msg = ("fir response not in inventory: %s, stopping correction"
@@ -633,71 +650,72 @@ def _read_response(root, sen_element, resp_element, cha_element,
     return response
 
 
-def _read_response_stage(stage, _ns, rate, stage_number, input_units,
+def _map_transfer_type(pz_transfer_function_type):
+
+    if pz_transfer_function_type == 'A':
+        return 'LAPLACE (RADIANS/SECOND)'
+    elif pz_transfer_function_type == 'B':
+        return 'LAPLACE (HERTZ)'
+    elif pz_transfer_function_type == 'D':
+        return 'DIGITAL (Z-TRANSFORM)'
+    else:
+        msg = ("Unknown transfer function code %s. Defaulting to Laplace"
+               "(rad)") % pz_transfer_function_type
+        warnings.warn(msg)
+        return 'LAPLACE (RADIANS/SECOND)'
+
+
+def _read_response_stage(stage, _ns, rate, stage_sequence_number, input_units,
                          output_units):
 
+    # Strip the namespace to get the element name (response type)
     elem_type = stage.tag.split("}")[1]
 
-    stage_sequence_number = stage_number
-
-    # Obtain the stage gain and frequency
-    # Default to a gain of 0 and frequency of 0 if missing
+    # Get the stage gain and frequency: 0 and 0.00 per default
     stage_gain = _tag2obj(stage, _ns("gain"), float) or 0
     stage_gain_frequency = _tag2obj(stage, _ns("gainFrequency"),
-                                    float) or float(0.00)
+                                    float) or 0.00
 
+    # Get the stage name
     name = stage.get("name")
     if name is not None:
         name = str(name)
+
+    # And the public resource identifier
     resource_id = stage.get("publicID")
     if resource_id is not None:
         resource_id = str(resource_id)
 
     # Determine the decimation parameters
     # This is dependent on the type of stage
-    # Decimation delay/correction need to be normalized
-    if(elem_type == "responseFIR"):
-        decimation_factor = _tag2obj(stage, _ns("decimationFactor"), int)
-        if rate != 0.0:
-            temp = _tag2obj(stage, _ns("delay"), float) / rate
-            decimation_delay = _read_float_var(temp,
-                                               FloatWithUncertaintiesAndUnit,
-                                               unit=True)
-            temp = _tag2obj(stage, _ns("correction"), float) / rate
-            decimation_corr = _read_float_var(temp,
-                                              FloatWithUncertaintiesAndUnit,
-                                              unit=True)
-        else:
-            decimation_delay = _read_float_var("inf",
-                                               FloatWithUncertaintiesAndUnit,
-                                               unit=True)
-            decimation_corr = _read_float_var("inf",
-                                              FloatWithUncertaintiesAndUnit,
-                                              unit=True)
-        decimation_input_sample_rate = \
-            _read_float_var(rate, Frequency)
-        decimation_offset = int(0)
-    elif(elem_type == "datalogger"):
-        decimation_factor = int(1)
-        decimation_delay = _read_float_var(0.00,
-                                           FloatWithUncertaintiesAndUnit,
-                                           unit=True)
-        decimation_corr = _read_float_var(0.00,
-                                          FloatWithUncertaintiesAndUnit,
-                                          unit=True)
-        decimation_input_sample_rate = \
-            _read_float_var(rate, Frequency)
-        decimation_offset = int(0)
-    elif(elem_type == "responsePAZ" or elem_type == "responsePolynomial"):
-        decimation_factor = None
-        decimation_delay = None
-        decimation_corr = None
-        decimation_input_sample_rate = None
-        decimation_offset = None
-    else:
-        raise ValueError("Unknown type of response: " + str(elem_type))
+    decimation = {
+      "factor": None,
+      "delay": None,
+      "correction": None,
+      "rate": None,
+      "offset": None
+    }
 
-    # set up list of for this stage arguments
+    # Skip decimation for analogue outputs
+    # Since 0.10 ResponsePAZ can have a decimation attributes
+    if output_units != "V":
+
+      # Get element or default value
+      decimation["factor"] = _tag2obj(stage, _ns("decimationFactor"), int) or 1
+      decimation["delay"] = _tag2obj(stage, _ns("delay"), float)  or 0
+      decimation["correction"] = _tag2obj(stage, _ns("correction"), float) or 0
+      decimation["offset"] = _tag2obj(stage, _ns("offset"), float) or 0
+      decimation["rate"] = _read_float_var(rate, Frequency)
+
+    # Decimation delay/correction need to be normalized
+    if rate != 0.0:
+      if decimation["delay"] is not None:
+        decimation["delay"] /= rate
+        decimation["delay"] = _read_float_var(decimation["delay"] / rate, FloatWithUncertaintiesAndUnit, unit=True)
+      if decimation["correction"] is not None:
+        decimation["correction"] = _read_float_var(decimation["correction"] / rate, FloatWithUncertaintiesAndUnit, unit=True)
+
+    # Set up list of for this stage arguments
     kwargs = {
         "stage_sequence_number": stage_sequence_number,
         "input_units": str(input_units),
@@ -710,18 +728,16 @@ def _read_response_stage(stage, _ns, rate, stage_number, input_units,
         "stage_gain_frequency": stage_gain_frequency,
         "name": name,
         "description": None,
-        "decimation_input_sample_rate": decimation_input_sample_rate,
-        "decimation_factor": decimation_factor,
-        "decimation_offset": decimation_offset,
-        "decimation_delay": decimation_delay,
-        "decimation_correction": decimation_corr
+        "decimation_input_sample_rate": decimation["rate"],
+        "decimation_factor": decimation["factor"],
+        "decimation_offset": decimation["offset"],
+        "decimation_delay": decimation["delay"],
+        "decimation_correction": decimation["correction"]
     }
 
     # Different processing for different types of responses
     # currently supported:
-    # PAZ
-    # COEFF
-    # FIR
+    # PAZ # IIR # COEFF # FIR
     # Polynomial response is not supported, could not find example
     if(elem_type == 'responsePAZ'):
 
@@ -737,17 +753,7 @@ def _read_response_stage(stage, _ns, rate, stage_number, input_units,
         # B: Laplace (Hz)
         # D: digital (z-transform)
         pz_transfer_function_type = _tag2obj(stage, _ns("type"), str)
-        if pz_transfer_function_type == 'A':
-            pz_transfer_function_type = 'LAPLACE (RADIANS/SECOND)'
-        elif pz_transfer_function_type == 'B':
-            pz_transfer_function_type = 'LAPLACE (HERTZ)'
-        elif pz_transfer_function_type == 'D':
-            pz_transfer_function_type = 'DIGITAL (Z-TRANSFORM)'
-        else:
-            msg = ("Unknown transfer function code %s. Defaulting to Laplace"
-                   "(rad)") % pz_transfer_function_type
-            warnings.warn(msg)
-            pz_transfer_function_type = 'LAPLACE (RADIANS/SECOND)'
+        pz_transfer_function_type = _map_transfer_type(pz_transfer_function_type)
 
         # Parse string of poles and zeros
         # paz are stored as a string in sc3ml
@@ -781,13 +787,34 @@ def _read_response_stage(stage, _ns, rate, stage_number, input_units,
             normalization_factor=normalization_factor, zeros=zeros,
             poles=poles, **kwargs)
 
-    elif(elem_type == 'datalogger'):
+    # For IIR filters reuse the PolesZerosResponseStage
+    elif(elem_type == 'responseIIR'):
+        pz_transfer_function_type = _tag2obj(stage, _ns("type"), str)
+        pz_transfer_function_type = _map_transfer_type(pz_transfer_function_type)
+
+        numerators = stage.find(_ns("numerators")).text.split(" ")
+        denominators = stage.find(_ns("denominators")).text.split(" ")
+
+        numerators = list(map(lambda x: float(x), numerators))
+        denominators = list(map(lambda x: float(x), denominators))
+
+        # Convert linear filter to pole, zero, gain repr.
+        # See #2004 @andres-h
+        zeros, poles, gain = tf2zpk(numerators, denominators)
+
+        return PolesZerosResponseStage(
+            pz_transfer_function_type=pz_transfer_function_type,
+            normalization_frequency=0,
+            normalization_factor=1, zeros=zeros,
+            poles=poles, **kwargs)
+
+    # Datalogger element: V => Counts
+    # Set empty coefficients and hard code as digital
+    elif(elem_type == "datalogger"):
         cf_transfer_function_type = "DIGITAL"
-        numerator = []
-        denominator = []
         return CoefficientsTypeResponseStage(
-            cf_transfer_function_type=cf_transfer_function_type,
-            numerator=numerator, denominator=denominator, **kwargs)
+            cf_transfer_function_type="DIGITAL",
+            numerator=[], denominator=[], **kwargs)
 
     elif(elem_type == 'responsePolynomial'):
         # Polynomial response (UNTESTED)
