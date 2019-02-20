@@ -22,6 +22,10 @@ master:
      (see #2104, #2090, #2093, #1872).
    * Skip invalid enumeration values during reading but raise a warning.
      (see #2106, #2098, #2095)
+ - obspy.io.seiscomp:
+   * Add support for schema version 0.11 with no changes to inventories
+   * Increased performance reading large files by caching attributes in dict
+     (see #2296)
  - obspy.io.sh:
    * Add read support for SeismicHandler EVT event files (see #2109)
  - obspy.io.shapefile:
@@ -77,6 +81,7 @@ master:
      (see #2101)
  - obspy.io.seiscomp:
    * Fix inventory read when maxClockDrift is unset in SC3ML (see #1993)
+     (see #2296)
  - obspy.io.stationxml
    * Allow writing of dates before 1900 also on Python 2 (see #2013, #2015).
    * Write the UTC time zone specifier to all times (see #2015).

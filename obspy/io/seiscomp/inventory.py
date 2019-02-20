@@ -37,89 +37,8 @@ from obspy.io.stationxml.core import _read_floattype
 
 SOFTWARE_MODULE = "ObsPy %s" % obspy.__version__
 SOFTWARE_URI = "http://www.obspy.org"
-<<<<<<< HEAD:obspy/io/seiscomp/sc3ml.py
-SCHEMA_VERSION = ["0.7", "0.8", "0.9", "0.10"]
+SCHEMA_VERSION = ["0.5", "0.6", "0.7", "0.8", "0.9", "0.10", "0.11"]
 
-
-def _is_sc3ml(path_or_file_object):
-    """
-    Simple function checking if the passed object contains a valid sc3ml 0.7
-    file. Returns True of False.
-    The test is not exhaustive - it only checks the root tag but that should
-    be good enough for most real world use cases. If the schema is used to
-    test for a StationXML file, many real world files are false negatives as
-    they don't adhere to the standard.
-    :param path_or_file_object: File name or file like object.
-    """
-    if hasattr(path_or_file_object, "tell") and hasattr(path_or_file_object,
-                                                        "seek"):
-        current_position = path_or_file_object.tell()
-
-    try:
-        if isinstance(path_or_file_object, etree._Element):
-            xmldoc = path_or_file_object
-        else:
-            try:
-                xmldoc = etree.parse(path_or_file_object)
-            except etree.XMLSyntaxError:
-                return False
-        root = xmldoc.getroot()
-        try:
-            match = re.match(
-                r'{http://geofon.gfz-potsdam.de/ns/seiscomp3-schema/[-+]?'
-                r'[0-9]*\.?[0-9]+}', root.tag)
-            assert match is not None
-        except Exception:
-            return False
-        # Check if schema version is supported
-        if root.attrib["version"] not in SCHEMA_VERSION:
-            warnings.warn("The sc3ml file has version %s, ObsPy can "
-                          "deal with versions %s. Proceed with caution." % (
-                              root.attrib["version"], SCHEMA_VERSION))
-        return True
-    finally:
-        # Make sure to reset file pointer position.
-        try:
-            path_or_file_object.seek(current_position, 0)
-        except Exception:
-            pass
-
-
-def validate_sc3ml(path_or_object):
-    """
-    Checks if the given path is a valid sc3ml file.
-
-    Returns a tuple. The first item is a boolean describing if the validation
-    was successful or not. The second item is a list of all found validation
-    errors, if existent.
-
-    :param path_or_object: File name or file like object. Can also be an etree
-        element.
-    """
-    # Get the schema location.
-    schema_location = os.path.dirname(inspect.getfile(inspect.currentframe()))
-    schema_location = os.path.join(schema_location, "data",
-                                   "sc3ml_0.7.xsd")
-
-    xmlschema = etree.XMLSchema(etree.parse(schema_location))
-
-    if isinstance(path_or_object, etree._Element):
-        xmldoc = path_or_object
-    else:
-        try:
-            xmldoc = etree.parse(path_or_object)
-        except etree.XMLSyntaxError:
-            return (False, ("Not a XML file.",))
-
-    valid = xmlschema.validate(xmldoc)
-
-    # Pretty error printing if the validation fails.
-    if valid is not True:
-        return (False, xmlschema.error_log)
-    return (True, ())
-=======
-SCHEMA_VERSION = ['0.5', '0.6', '0.7', '0.8', '0.9']
->>>>>>> b8b858a2f2f343de5891ff3d9f7fe07f8e8c4b81:obspy/io/seiscomp/inventory.py
 
 
 def _read_sc3ml(path_or_file_object):
@@ -159,11 +78,62 @@ def _read_sc3ml(path_or_file_object):
     module = None
     module_uri = None
 
+    # Find the inventory root element. (Only finds the first. We expect only
+    # one, so any more than that will be ignored.)
+    # that will be ignored.)
+    inv_element = root.find(_ns("Inventory"))
+    
+    # Pre-generate a dictionary of the sensors, dataloggers and responses to
+    # avoid costly linear search when parsing network nodes later
+    # search when parsing network nodes later.
+    # Register sensors
+    sensors = {}
+    for sensor_element in inv_element.findall(_ns("sensor")):
+        public_id = sensor_element.get("publicID")
+        if public_id:
+            if public_id in sensors:
+                msg = ("Found multiple matching sensor tags with the same "
+	               "publicID '{}'.".format(public_id))
+                raise obspy.ObsPyException(msg)
+            else:
+                sensors[public_id] = sensor_element
+    # Register dataloggers
+    dataloggers = {}
+    for datalogger_element in inv_element.findall(_ns("datalogger")):
+        public_id = datalogger_element.get("publicID")
+        if public_id:
+            if public_id in dataloggers:
+                msg = ("Found multiple matching datalogger tags with the same "
+	               "publicID '{}'.".format(public_id))
+                raise obspy.ObsPyException(msg)
+            else:
+                dataloggers[public_id] = datalogger_element
+    # Register reponses
+    responses = {}
+
+    for response_type in ["responseFIR", "responsePAZ", "responseIIR", "responsePolynomial"]: 
+        for response_element in inv_element.findall(_ns(response_type)):
+            public_id = response_element.get("publicID")
+            if public_id:
+                if public_id in responses:
+                    msg = ("Found multiple matching {} tags with the same "
+                           "publicID '{}'.".format(response_type, public_id))
+                    raise obspy.ObsPyException(msg)
+                else:
+                    responses[public_id] = response_element
+    # Organize all the collection instrument information into a unified
+    # intrumentation register.
+    instrumentation_register = {
+        "sensors": sensors,
+        "dataloggers": dataloggers,
+        "responses": responses
+    }
+	
     # Collect all networks from the sc3ml inventory
     networks = []
-    inv_element = root.find(_ns("Inventory"))
     for net_element in inv_element.findall(_ns("network")):
-        networks.append(_read_network(inv_element, net_element, _ns))
+        networks.append(_read_network(instrumentation_register,
+                                      net_element, _ns))
 
     return obspy.core.inventory.Inventory(networks=networks, source=source,
                                           sender=sender, created=created,
@@ -189,12 +159,12 @@ def _tag2obj(element, tag, convert):
         None
 
 
-def _read_network(inventory_root, net_element, _ns):
+def _read_network(instrumentation_register, net_element, _ns):
 
     """
     Reads the network structure
 
-    :param inventory_root: base inventory element of sc3ml
+    :param instrumentation_register: register of instrumentation metadata
     :param net_element: network element to be read
     :param _ns: namespace
     """
@@ -216,7 +186,8 @@ def _read_network(inventory_root, net_element, _ns):
     # Collect the stations
     stations = []
     for sta_element in net_element.findall(_ns("station")):
-        stations.append(_read_station(inventory_root, sta_element, _ns))
+        stations.append(_read_station(instrumentation_register,
+                                      sta_element, _ns))
     network.stations = stations
 
     return network
@@ -237,12 +208,12 @@ def _get_restricted_status(element, _ns):
         return 'closed'
 
 
-def _read_station(inventory_root, sta_element, _ns):
+def _read_station(instrumentation_register, sta_element, _ns):
 
     """
     Reads the station structure
 
-    :param inventory_root: base inventory element of sc3ml
+    :param instrumentation_register: register of instrumentation metadata 
     :param sta_element: station element to be read
     :param _ns: name space
     """
@@ -279,7 +250,8 @@ def _read_station(inventory_root, sta_element, _ns):
     channels = []
     for sen_loc_element in sta_element.findall(_ns("sensorLocation")):
         for channel in sen_loc_element.findall(_ns("stream")):
-            channels.append(_read_channel(inventory_root, channel, _ns))
+            channels.append(_read_channel(instrumentation_register,
+                                          channel, _ns))
 
     station.channels = channels
 
@@ -362,12 +334,13 @@ def _read_sensor(equip_element, _ns):
         removal_date=None, calibration_dates=None)
 
 
-def _read_channel(inventory_root, cha_element, _ns):
+def _read_channel(instrumentation_register, cha_element, _ns):
 
     """
     reads channel element from sc3ml format
 
-    :param sta_element: channel element
+    :param instrumentation_register: register of instrumentation metadata
+    :param cha_element: channel element
     :param _ns: namespace
     """
 
@@ -412,53 +385,32 @@ def _read_channel(inventory_root, cha_element, _ns):
     # obtain the sensorID and link to particular publicID <sensor> element
     # in the inventory base node
     sensor_id = cha_element.get("sensor")
-    sensor_element = inventory_root.find(_ns("sensor[@publicID='" + sensor_id +
-                                             "']"))
+    sensor_element = instrumentation_register["sensors"].get(sensor_id)
+
     # obtain the poles and zeros responseID and link to particular
     # <responsePAZ> publicID element in the inventory base node
     if (sensor_element is not None and
        sensor_element.get("response") is not None):
 
         response_id = sensor_element.get("response")
-<<<<<<< HEAD:obspy/io/seiscomp/sc3ml.py
         if response_id is not None:
             # Change in v0.10 the way identifiers are delimited (# -> /)
             if len(response_id.split("#")) == 1:
-              resp_type = response_id.split("/")[0]
+                resp_type = response_id.split("/")[0]
             else:
-              resp_type = response_id.split("#")[0]
-            if resp_type == 'ResponsePAZ':
-                search = "responsePAZ[@publicID='" + response_id + "']"
-                response_element = inventory_root.find(_ns(search))
-            elif resp_type == 'ResponsePolynomial':
-                search = "responsePolynomial[@publicID='" + response_id + "']"
-                response_element = inventory_root.find(_ns(search))
+                resp_type = response_id.split("#")[0]
+            response_element = instrumentation_register["responses"]\
+                               .get(response_id)
         else:
             response_element = None
-=======
-        response_elements = []
-
-        for resp_type in ['responsePAZ', 'responsePolynomial']:
-            search = "{}[@publicID='{}']".format(resp_type, response_id)
-            response_elements += inventory_root.findall(_ns(search))
-        if len(response_elements) == 0:
-            msg = ("Could not find response tag with public ID "
-                   "'{}'.".format(response_id))
-            raise obspy.ObsPyException(msg)
-        elif len(response_elements) > 1:
-            msg = ("Found multiple matching response tags with the same "
-                   "public ID '{}'.".format(response_id))
-            raise obspy.ObsPyException(msg)
-        response_element = response_elements[0]
->>>>>>> b8b858a2f2f343de5891ff3d9f7fe07f8e8c4b81:obspy/io/seiscomp/inventory.py
     else:
         response_element = None
 
     # obtain the dataloggerID and link to particular <responsePAZ> publicID
     # element in the inventory base node
     datalogger_id = cha_element.get("datalogger")
-    search = "datalogger[@publicID='" + datalogger_id + "']"
-    data_log_element = inventory_root.find(_ns(search))
+    data_log_element = \
+        instrumentation_register["dataloggers"].get(datalogger_id)
 
     channel.restricted_status = _get_restricted_status(cha_element, _ns)
 
@@ -521,7 +473,8 @@ def _read_channel(inventory_root, cha_element, _ns):
         if digital_filter_chain is not None:
             response_dig_id = digital_filter_chain.split(" ")
 
-    channel.response = _read_response(inventory_root, sensor_element,
+    channel.response = _read_response(instrumentation_register,
+                                      sensor_element,
                                       response_element, cha_element,
                                       data_log_element, _ns,
                                       channel.sample_rate,
@@ -556,13 +509,12 @@ def _read_instrument_sensitivity(sen_element, cha_element, _ns):
     return sensitivity
 
 
-def _read_response(root, sen_element, resp_element, cha_element,
+def _read_response(instrumentation_register, sen_element, resp_element, cha_element,
                    data_log_element, _ns, samp_rate, fir, analogue):
     """
     reads response from sc3ml format
 
-    :param
-    :param _ns: namespace
+    :param instrumentation_register: register of instrumentation metadata
     """
     response = obspy.core.inventory.response.Response()
     response.instrument_sensitivity = _read_instrument_sensitivity(
@@ -597,13 +549,7 @@ def _read_response(root, sen_element, resp_element, cha_element,
             # get the particular stage decimation factor
             # multiply the decimated sample rate by this factor
             # These may be FIR, IIR or PAZ
-            if "ResponseFIR" in fir_id:
-              search = "responseFIR[@publicID='" + fir_id + "']"
-            elif "ResponseIIR" in fir_id:
-              search = "responseIIR[@publicID='" + fir_id + "']"
-            elif "ResponsePAZ" in fir_id:
-              search = "responsePAZ[@publicID='" + fir_id + "']"
-            fir_element = root.find(_ns(search))
+            fir_element = instrumentation_register["responses"].get(fir_id)
             if fir_element is None:
                 continue
             dec_fac = _tag2obj(fir_element, _ns("decimationFactor"), int)
@@ -642,8 +588,7 @@ def _read_response(root, sen_element, resp_element, cha_element,
     # Output unit: V
     if len(analogue):
         for analogue_id in analogue:
-            search = "responsePAZ[@publicID='" + analogue_id + "']"
-            analogue_element = root.find(_ns(search))
+            analogue_element = instrumentation_register["responses"].get(analogue_id)
             if analogue_element is None:
                 msg = ('Analogue responsePAZ not in inventory:'
                        '%s, stopping before stage %i') % (analogue_id, stage)
@@ -671,13 +616,7 @@ def _read_response(root, sen_element, resp_element, cha_element,
     # Input unit: COUNTS
     # Output unit: COUNTS
     for fir_id, rate in zip(fir, fir_stage_rates):
-        if "ResponseFIR" in fir_id:
-          search = "responseFIR[@publicID='" + fir_id + "']"
-        elif "ResponseIIR" in fir_id:
-          search = "responseIIR[@publicID='" + fir_id + "']"
-        elif "ResponsePAZ" in fir_id:
-          search = "responsePAZ[@publicID='" + fir_id + "']"
-        stage_element = root.find(_ns(search))
+        stage_element = instrumentation_register["responses"].get(fir_id)
         if stage_element is None:
             msg = ("fir response not in inventory: %s, stopping correction"
                    "before stage %i") % (fir_id, stage)

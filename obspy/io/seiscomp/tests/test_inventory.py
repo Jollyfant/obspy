@@ -45,25 +45,12 @@ class SC3MLTestCase(unittest.TestCase):
         """
         Test multiple schema versions
         """
-<<<<<<< HEAD:obspy/io/seiscomp/tests/test_sc3ml.py
-        read_inventory(os.path.join(self.data_dir, "version0.7"))
-        read_inventory(os.path.join(self.data_dir, "version0.8"))
-        read_inventory(os.path.join(self.data_dir, "version0.9"))
-        read_inventory(os.path.join(self.data_dir, "version0.10"))
-
-        with self.assertRaises(ValueError) as e:
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                read_inventory(os.path.join(self.data_dir,
-                                            "version0.11"))
-=======
-        for version in ['0.5', '0.6', '0.7', '0.8', '0.9']:
+        for version in ['0.5', '0.6', '0.7', '0.8', '0.9', '0.10']:
             filename = os.path.join(self.data_dir, 'version%s' % version)
             read_inventory(filename)
 
-        for version in ['0.3', '0.10']:
+        for version in ['0.3', '0.12']:
             filename = os.path.join(self.data_dir, 'version%s' % version)
->>>>>>> b8b858a2f2f343de5891ff3d9f7fe07f8e8c4b81:obspy/io/seiscomp/tests/test_inventory.py
 
             with self.assertRaises(ValueError) as e:
                 with warnings.catch_warnings():
